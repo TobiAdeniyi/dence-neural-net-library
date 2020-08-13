@@ -1,21 +1,13 @@
 import numpy as np
 import time
+import scipy
 
 
 class MyDenceNN:
     
-    def __init__(self, hidden_units=None, activations={'1': "sigmoid"}, 
-                 cost_fun="logistic_regression", alpha=0.1, epochs=1, display=False):  
+    def __init__(self, activations={'1': "sigmoid"}):  
         # Initialise Parameters
-        self.hidden_units = hidden_units
         self.activations = activations
-        self.cost_fun = cost_fun
-        self.alpha = alpha
-        self.epochs = epochs
-        self.display = display
-        
-        self.input_units = None
-        self.output_units = None
         
     #######################
     # Adds input features #
@@ -70,7 +62,7 @@ class MyDenceNN:
             self.hidden_units = hidden_units
             
         n = self.hidden_units
-        if self.display:
+        if True:
             print("#################\nUnits per layer")
             for l in range(1, len(n)+1):
                 print("----------------")
@@ -104,17 +96,30 @@ class MyDenceNN:
         output: W = {"W1": W1, ..., "WL": WL}, b = {"b1": b1, ..., "bL": bL}
         """
         # Number of layers
-        L = len(units) - 1
+        L = len(units)
         # Dictionary of parameters
         self.W = {}
         self.b = {}
         
+        # Dictionary of activations functions
+        initialisers = {
+            'sigmoid': self.Sigmoid_init,
+            'swish'  : self.Swish_init,
+            'tanh'   : self.Tanh_init,
+            'relu'   : self.ReLU_init,
+            'l_relu' : self.L_ReLU_init
+        }
+        
         if self.display:
             print("#################\nWights and Biasses")
             
-        for l in range(1, L+1):
-            self.W[str(l)] = np.random.randn(units[str(l)], units[str(l-1)])
+        for l in range(1, L):
+            self.W[str(l)] = np.random.randn(units[str(l)], units[str(l-1)])*0.01
             self.b[str(l)] = np.zeros((units[str(l)], 1))
+            
+            # Apply Weighted initialisation
+            if self.weighted_init:
+                self.W[str(l)] = initialisers[self.activations[str(l)]](self.W[str(l)], units, l)
             
             if self.display:
                 print("\n----------------")
@@ -127,6 +132,36 @@ class MyDenceNN:
                 print("----------------")
                 print("----------------\n\n")
         
+     
+    
+    
+    ##################################
+    # Weighted Initialiser Functions #
+    ##################################
+    
+    # Sigmodal Activation
+    def Sigmoid_init(self, W, units, l):
+        return W * np.sqrt(1 / units[str(l-1)])
+
+    # Swish Activation
+    def Swish_init(self, W, units, l):
+        return W * np.sqrt(1 / units[str(l-1)])
+
+    # Hyperbolic Tangent
+    def Tanh_init(self, W, units, l):
+        return W * np.sqrt(2 / (units[str(l)] + units[str(l-1)]))
+
+    # Rectified Linear Unit
+    def ReLU_init(self, W, units, l):
+        return W * np.sqrt(2 / units[str(l-1)])
+
+    # Leaky Rectified Linear Unit
+    def L_ReLU_init(self, W, units, l):
+        return W * np.sqrt(2 / units[str(l-1)])
+    
+    
+    
+    
         
     ###############################
     # Forward linear Calculations #
@@ -176,7 +211,7 @@ class MyDenceNN:
     ############################
     # Forward pass calculation #
     ############################
-    def forward_activation(self, Z, g):
+    def forward_activation(self, L, l, Z, g):
         """ 
         ## Applies specified activation function to Z ##
         Inputs: Z = linear forward pass, g = activation function
@@ -193,7 +228,13 @@ class MyDenceNN:
         # Call activation on Z
         try:
             A = activations[g](Z)
-            return A
+            # Dropouts
+            drop = None
+            if l < L-1:
+                drop = np.random.rand(A.shape[0], A.shape[1]) < self.keep_prob
+                A *= drop
+                A /= self.keep_prob
+            return A, drop
         except:
             display(print("\n----------------\nInvalid activation function\n----------------\n"))
             display(print(g))
@@ -209,18 +250,21 @@ class MyDenceNN:
 
     # Logistic Regression
     def LOG(self, AL, Y):
-        J = -1/Y.shape[1]*np.sum(Y*np.log(AL) + (1-Y)*np.log(1-AL), axis=1, keepdims=True)
+        J = -(1/Y.shape[1]) * (np.dot(Y, np.log(AL).T) + np.dot(1-Y, np.log(1-AL).T))
+        J = np.squeeze(J)
         return J
 
     # Mean Squared Error
     def MSE(self, AL, Y):
         error = Y - AL
         J = -1/Y.shape[1]*np.sum(error*error, axis=1, keepdims=True)
+        J = np.squeeze(J)
         return J
 
     # Mean Absolute Error
     def MAE(self, AL, Y):
         J = -1/Y.shape[1]*np.sum(np.absolute(Y, AL), axis=1, keepdims=True)
+        J = np.squeeze(J)
         return J
     #------------------
     #------------------
@@ -229,7 +273,7 @@ class MyDenceNN:
     ##################
     # Calculate Cost #
     ##################
-    def cost(self, AL):
+    def cost(self, L):
         """
         Calculates the current cost (error) of the models out puts AL
         Inputs: AL = Model Predication, Y = Expected (True) values, 
@@ -242,23 +286,22 @@ class MyDenceNN:
             'mean_squared_error' : self.MSE, # Mean Squared Error
             'mean_absolute_error': self.MAE  # Mean Absolute Error
         }
+        
+        m = self.Y.shape[1]
+        AL = self.A[str(L)]
+        WL = self.W[str(L)]
+        
         try:
             J = functions[self.cost_fun](AL, self.Y)
-            print("\n-------------------")
-            print("-------------------")
-            print("Cost: J(AL, Y) = {}".format(J))
-            print("-------------------")
-            print("-------------------\n")
+            # L2 Regularisation
+            if self.L2_reg:
+                J += self.lambd/(2*m)*np.linalg.norm(WL)**2
             return J
         except:
             print("\n----------------\n----------------")
             print("Invalid Cost Function:\n----------------")
             print(self.cost_fun)
             print("\n\n----------------\nCost Functions available:\n----------------\n")
-            for key in functions.keys():
-                display(print(key))
-            pass
-            print("----------------\n----------------")
     
     
     ########################
@@ -277,16 +320,18 @@ class MyDenceNN:
         g = self.activations
         #assert(W.shape[0] == b.shape[0]
 
-        L = len(self.units) - 1
+        L = len(self.units)
         A_prev = X
         self.A = {"0": X}
         self.Z = {}
+        self.drop = {}
 
         if self.display:
             print("###################")
             print("Forward Propagation")
             print("###################\n")
-        for l in range(1, L+1):
+            
+        for l in range(1, L):
             # Parameters
             bl = b[str(l)]
             Wl = W[str(l)]
@@ -300,14 +345,15 @@ class MyDenceNN:
 
             # Forward Linear Pass
             Zl = self.forward_linear(A_prev, Wl, bl)
-            Al = self.forward_activation(Zl, gl)
+            Al, dropl = self.forward_activation(L, l, Zl, gl)
 
             # Update and Chase Values
             A_prev = Al  
             self.A[str(l)] = Al
             self.Z[str(l)] = Zl
+            self.drop[str(l)] = dropl
         
-        self.J = self.cost(self.A[str(L)])
+        self.J = self.cost(L-1)
     
     
     ###############################################
@@ -324,9 +370,9 @@ class MyDenceNN:
         return 1 - np.power(A, 2)
 
     def ReLU_prime(self, A):
-        A[A<=0] = 0
-        A[A>0] = 1
-        return A
+        D = np.zeros(A.shape)
+        D[A > 0] = 1
+        return D
 
     def L_ReLU_prime(self, A, alpha):
         return 1 if A > 0 else alpha
@@ -343,15 +389,20 @@ class MyDenceNN:
         # Dictionary of activations functions
         derivatives = {
             'sigmoid': self.Sigmoid_prime,
-            'tanh'   : self.Tanh,
+            'tanh'   : self.Tanh_prime,
             'relu'   : self.ReLU_prime,
             'l_relu' : self.L_ReLU_prime
         }
         m = Al.shape[1]
         gl_prime = derivatives[gl](Al)
 
-        dZl = dAl*gl_prime
-        dWl = 1/m*np.dot(dZl, A_prev.T)
+        dZl = dAl * gl_prime
+        dWl = 1/m * np.dot(dZl, A_prev.T)
+        
+        ## L2 Regularisation
+        if self.L2_reg:
+            dWl += self.lambd/(2*m)*np.linalg.norm(Wl)**2
+            
         dbl = 1/m*np.sum(dZl, axis=1, keepdims=True)
 
         # Calculate dA[l-1]
@@ -363,8 +414,8 @@ class MyDenceNN:
     # Backwards Linear #
     ####################
     def backward_linear(self, dW, db, l, alpha=1):
-        self.W[str(l)] -= alpha*dW
-        self.b[str(l)] -= alpha*db
+        self.W[str(l)] = self.W[str(l)] - alpha*dW
+        self.b[str(l)] = self.b[str(l)] - alpha*db
     
     
     #########################
@@ -379,18 +430,14 @@ class MyDenceNN:
         g = self.activations
         alpha = self.alpha
         
-        L = len(self.units) - 1
-        A_prev = A[str(L)]
+        L = len(self.units)
+        A_prev = A[str(L-1)]
         dA_prev = self.initial_dAL(A_prev, Y)
         # Backpropegate
-        for l in range(L, 0, -1):
+        for l in range(L-1, 0, -1):
             # Current activation 
-            try:
-                gl = g[str(l)]
-            except:
-                gl = "sigmoid"
-            if self.display:
-                print("Layer: {} using {} activation".format(l, gl))
+            gl = g[str(l)]
+            
             # Get Variable and Parameters
             Wl, bl = W[str(l)], b[str(l)]
             Al, dAl = A_prev, dA_prev
@@ -408,8 +455,29 @@ class MyDenceNN:
     ######################################
     # Dence Neural Network Model Builder #
     ######################################
-    def solve(self, X=None, Y=None, add_hidden_units=None, add_activations=None, 
-                 cost_fun="logistic_regression", alpha=0.1, epochs=1):
+    def solve(self, X=None, Y=None, add_hidden_units=None, add_activations=None,
+            cost_fun="logistic_regression", alpha=0.1, epochs=1, display=False, 
+            print_cost=False, L2_reg=False, lambd = 0.01, keep_prob=1, normalise=False, 
+            weighted_init=False):
+        
+        # Initialise Parameters
+        self.display = display
+        self.print_cost = print_cost
+        self.normalise = normalise
+        
+        ## Normalise Input X
+        if self.normalise:
+            n, m = X.shape
+            # print(X.shape)
+
+            self.mue = 1/(n*m)*np.sum(X, keepdims=True)
+            # print(self.mue.shape)
+            
+            self.std = 1/(n*m)*np.sum((X-self.mue)**2, keepdims=True)
+            # print(self.std.shape)
+            
+            X = (X-self.mue)/np.sqrt(self.std)
+            
         # Initialise Parameters
         self.add_data(X, Y)
         self.add_units(add_hidden_units)
@@ -417,58 +485,38 @@ class MyDenceNN:
         self.cost_fun = cost_fun
         self.alpha = alpha
         self.epochs = epochs
+        self.L2_reg = L2_reg
+        self.lambd = lambd
+        self.keep_prob = keep_prob
+        self.weighted_init = weighted_init
+        
         
         self.costs = {}
         self.forward_prop_time = {}
         self.backward_prop_time = {}
         
-        if self.display:
+        if self.print_cost:
+            print("\n\n######################################")
             print("######################################")
-            print("######################################")
-            print("\t\t  Optimising Model")
+            print("\t  Optimising Model")
             print("######################################")
             print("######################################\n\n")
         
-        # Initialise Parameters
+        
         self.build()
         
         # For epoch in epochs
         for epoch in range(1, epochs+1):
-            print("\n----------------------------------------")
-#             print("----------------------------------------")
-            print("\t\t  Epoch {}".format(epoch))
-            print("----------------------------------------")
-#             print("----------------------------------------\n")
-            
             ## Forwardpropagation
-            tic = time.time()
             self.forward_propagation()
-            toc = time.time()
+            
+            ## Backwardpropagation
+            self.backward_propagation()
+            
             ### Save Cost and Run-time
             self.costs["epoch"+str(epoch)] = self.J
-            self.forward_prop_time["epoch"+str(epoch)] = toc - tic
+            if self.print_cost:
+                if epoch % 100 == 0:
+                    print("Epoch {}: Cost = {}".format(epoch, self.J))
+                    print("--------------------------")
             
-            L = str(len(self.units) - 1)
-#             print("\n----------------------------------------")
-#             print("AL = \n{}".format(self.A[L]))
-#             print("W = \n {}\n\nb = \n{}".format(self.W[L],self.b[L]))
-#             print("----------------------------------------")
-            
-#             print("\n----------------------------------------")
-#             print("----------------------------------------")
-#             print("Forward Prop Run-time:\t\t{}".format(toc-tic))
-#             print("----------------------------------------")
-#             print("----------------------------------------\n")
-
-            ## Backwardpropagation
-            tic = time.time()
-            self.backward_propagation()
-            toc = time.time()
-            ### Save W and b
-            self.backward_prop_time["epoch"+str(epoch)] = toc - tic
-            
-#             print("\n----------------------------------------")
-#             print("----------------------------------------")
-#             print("Backward Prop Run-time:\t\t{}".format(toc-tic))
-#             print("----------------------------------------")
-#             print("----------------------------------------\n")
